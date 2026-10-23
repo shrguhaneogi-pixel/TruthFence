@@ -23,6 +23,7 @@ yarn-error.log*
 # Vercel
 .vercel
 
-# OS metadata
+# IDE & Agent metadata
+.agents/
 .DS_Store
 Thumbs.db

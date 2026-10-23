@@ -13,10 +13,18 @@ describe('Built-in Scenarios Library', () => {
     expect(categories).toContain('format');
   });
 
-  it('retrieves scenarios by ID', () => {
-    const s = getScenarioById('canary-exfiltration');
-    expect(s).toBeDefined();
-    expect(s?.category).toBe('canary');
+  it('retrieves scenarios by standard ID and backward-compatible alias', () => {
+    const s1 = getScenarioById('canary-disclosure');
+    expect(s1).toBeDefined();
+    expect(s1?.category).toBe('canary');
+
+    const s2 = getScenarioById('canary-exfiltration');
+    expect(s2).toBeDefined();
+    expect(s2?.category).toBe('canary');
+
+    const s3 = getScenarioById('grounding');
+    expect(s3).toBeDefined();
+    expect(s3?.category).toBe('grounding');
   });
 });
 

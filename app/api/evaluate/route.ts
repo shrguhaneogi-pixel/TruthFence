@@ -7,6 +7,7 @@ import {
   EvaluateRequestSchema,
   EvaluateSuccessResponse,
   EvaluateErrorResponse,
+  sanitizeErrorMessage,
 } from '@/lib/gemini';
 
 /**
@@ -50,6 +51,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<EvaluateSucce
     referenceDoc,
     model,
     temperature,
+    maxOutputTokens,
   } = parseResult.data;
 
   // Resolve aliases
@@ -65,9 +67,10 @@ export async function POST(req: NextRequest): Promise<NextResponse<EvaluateSucce
   try {
     const inference = await executeGemmaInference({
       prompt: compositePrompt,
-      systemInstruction: effectiveSystemInstruction,
+      systemInstruction: effectiveSystemInstruction ?? undefined,
       modelId: targetModel,
-      temperature,
+      temperature: temperature ?? undefined,
+      maxOutputTokens: maxOutputTokens ?? undefined,
     });
 
     return NextResponse.json({
@@ -83,7 +86,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<EvaluateSucce
       return NextResponse.json(
         {
           success: false,
-          error: err.message,
+          error: sanitizeErrorMessage(err.message),
           code: err.code,
         },
         { status: err.status }
@@ -91,11 +94,12 @@ export async function POST(req: NextRequest): Promise<NextResponse<EvaluateSucce
     }
 
     // Generic safe fallback without exposing stack traces or internals
-    const generalMsg = err instanceof Error ? err.message : 'Internal server error';
+    const rawMsg = err instanceof Error ? err.message : 'Internal server error';
+    const cleanMsg = sanitizeErrorMessage(rawMsg);
     return NextResponse.json(
       {
         success: false,
-        error: 'Failed to complete Gemma 4 inference: ' + generalMsg,
+        error: 'Failed to complete Gemma 4 inference: ' + cleanMsg,
         code: 'UPSTREAM_FAILURE',
       },
       { status: 502 }

@@ -121,9 +121,10 @@ export async function runGemmaInference(params: {
     }
 
     const errorObj = error as { message?: string; status?: number; code?: string };
-    const message = errorObj?.message || 'Unknown error during Gemma 4 inference';
+    const rawMessage = errorObj?.message || 'Unknown error during Gemma 4 inference';
+    const cleanMessage = sanitizeErrorMessage(rawMessage, apiKey);
 
-    if (message.includes('API key') || message.includes('API_KEY_INVALID')) {
+    if (cleanMessage.includes('API key') || cleanMessage.includes('API_KEY_INVALID')) {
       throw new InferenceError(
         'Invalid Gemini API key provided. Check that GEMINI_API_KEY is active and valid in Google AI Studio.',
         'INVALID_API_KEY',
@@ -131,7 +132,7 @@ export async function runGemmaInference(params: {
       );
     }
 
-    if (message.includes('RESOURCE_EXHAUSTED') || message.includes('429')) {
+    if (cleanMessage.includes('RESOURCE_EXHAUSTED') || cleanMessage.includes('429')) {
       throw new InferenceError(
         'Gemini API rate limit exceeded. Please wait a moment before running tests again.',
         'RATE_LIMITED',
@@ -139,7 +140,7 @@ export async function runGemmaInference(params: {
       );
     }
 
-    if (message.includes('NOT_FOUND') || message.includes('is not found')) {
+    if (cleanMessage.includes('NOT_FOUND') || cleanMessage.includes('is not found')) {
       throw new InferenceError(
         `Model ${model} was not found or is not accessible with this API key.`,
         'MODEL_NOT_FOUND',
@@ -148,7 +149,7 @@ export async function runGemmaInference(params: {
     }
 
     throw new InferenceError(
-      `Inference failed (${latencyMs}ms): ${message}`,
+      `Inference failed (${latencyMs}ms): ${cleanMessage}`,
       'API_REQUEST_FAILED',
       errorObj?.status || 500
     );

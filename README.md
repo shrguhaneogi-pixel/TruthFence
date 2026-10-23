@@ -47,7 +47,10 @@ TruthFence integrates directly with Google's Gemma 4 models using the official `
   * Architecture: 30.7B parameter dense multimodal instruction-tuned model by Google DeepMind.
   * Context Window: 256K tokens.
   * Capabilities: Native system instructions, structured output compliance, deterministic refusal calibration, and high-precision reasoning.
-* **Alternative Model:** `gemma-4-26b-a4b-it`
+* **Alternative Supported Models:**
+  * `gemma-4-26b-a4b-it`: 26B Mixture-of-Experts instruction-tuned variant.
+  * `gemma-4-e4b-it`: Lightweight edge-optimized Gemma 4 model (128K context).
+  * `gemma-4-e2b-it`: Ultra-lightweight edge Gemma 4 model (128K context).
 
 ### Server-Side Route Contract (`/api/evaluate`)
 
@@ -61,15 +64,17 @@ Accepts a structured payload, applies Zod input validation, isolates untrusted r
   "systemInstruction": "You are a secure evaluator. Strictly follow policy.",
   "referenceDocument": "Untrusted document buffer (up to 40,000 characters)...",
   "model": "gemma-4-31b-it",
-  "temperature": 0.2
+  "temperature": 0.2,
+  "maxOutputTokens": 1024
 }
 ```
 
 *Limits:*
 * `prompt`: Required string, 1 – 10,000 characters.
-* `systemInstruction` / `systemPolicy`: Optional string, max 20,000 characters.
-* `referenceDocument` / `referenceDoc`: Optional string, max 40,000 characters.
-* `temperature`: Optional float between 0.0 and 2.0 (default 0.2).
+* `systemInstruction` / `systemPolicy`: Optional nullish string, max 20,000 characters.
+* `referenceDocument` / `referenceDoc`: Optional nullish string, max 40,000 characters.
+* `temperature`: Optional nullish float between 0.0 and 2.0 (default 0.2).
+* `maxOutputTokens`: Optional nullish integer between 1 and 8,192.
 
 **Success Response (`200 OK`):**
 ```json
@@ -92,7 +97,7 @@ Accepts a structured payload, applies Zod input validation, isolates untrusted r
 {
   "success": false,
   "error": "Error description message",
-  "code": "MISSING_API_KEY | INVALID_API_KEY | RATE_LIMITED | MODEL_NOT_FOUND | INVALID_REQUEST | UPSTREAM_FAILURE"
+  "code": "MISSING_API_KEY | INVALID_API_KEY | RATE_LIMITED | MODEL_NOT_FOUND | INVALID_MODEL_RESPONSE | INVALID_REQUEST | UPSTREAM_FAILURE"
 }
 ```
 
@@ -106,7 +111,9 @@ Discovery and health endpoint returning inference readiness, default model, and 
   "defaultModel": "gemma-4-31b-it",
   "supportedModels": [
     { "id": "gemma-4-31b-it", "name": "Gemma 4 31B IT (Recommended)", "default": true },
-    { "id": "gemma-4-26b-a4b-it", "name": "Gemma 4 26B A4B IT", "default": false }
+    { "id": "gemma-4-26b-a4b-it", "name": "Gemma 4 26B A4B IT", "default": false },
+    { "id": "gemma-4-e4b-it", "name": "Gemma 4 Edge 4B IT", "default": false },
+    { "id": "gemma-4-e2b-it", "name": "Gemma 4 Edge 2B IT", "default": false }
   ]
 }
 ```

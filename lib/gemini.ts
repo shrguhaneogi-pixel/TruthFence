@@ -36,7 +36,21 @@ export const SUPPORTED_GEMMA_MODELS = [
     name: 'Gemma 4 26B A4B IT',
     contextWindow: 262144,
     default: false,
-    description: 'Alternative Gemma 4 architecture instruction-tuned variant',
+    description: 'Mixture-of-Experts Gemma 4 instruction-tuned variant',
+  },
+  {
+    id: 'gemma-4-e4b-it',
+    name: 'Gemma 4 Edge 4B IT',
+    contextWindow: 131072,
+    default: false,
+    description: 'Lightweight edge-optimized Gemma 4 instruction-tuned model',
+  },
+  {
+    id: 'gemma-4-e2b-it',
+    name: 'Gemma 4 Edge 2B IT',
+    contextWindow: 131072,
+    default: false,
+    description: 'Ultra-lightweight edge Gemma 4 instruction-tuned model',
   },
 ] as const;
 
@@ -79,29 +93,35 @@ export const EvaluateRequestSchema = z.object({
   systemInstruction: z
     .string()
     .max(20000, 'System instruction must not exceed 20,000 characters.')
-    .optional(),
+    .nullish(),
   systemPolicy: z
     .string()
     .max(20000, 'System policy must not exceed 20,000 characters.')
-    .optional(),
+    .nullish(),
   referenceDocument: z
     .string()
     .max(40000, 'Reference document must not exceed 40,000 characters.')
-    .optional(),
+    .nullish(),
   referenceDoc: z
     .string()
     .max(40000, 'Reference document must not exceed 40,000 characters.')
-    .optional(),
+    .nullish(),
   model: z
     .string()
     .trim()
     .max(64, 'Model identifier must not exceed 64 characters.')
-    .optional(),
+    .nullish(),
   temperature: z
     .number()
     .min(0, 'Temperature must be at least 0.0.')
     .max(2, 'Temperature must not exceed 2.0.')
-    .optional(),
+    .nullish(),
+  maxOutputTokens: z
+    .number()
+    .int('maxOutputTokens must be an integer.')
+    .positive('maxOutputTokens must be positive.')
+    .max(8192, 'maxOutputTokens must not exceed 8192.')
+    .nullish(),
 });
 
 export type EvaluateRequest = z.infer<typeof EvaluateRequestSchema>;
@@ -131,11 +151,16 @@ export interface EvaluateErrorResponse {
  */
 export function sanitizeErrorMessage(message: string, apiKey?: string): string {
   let sanitized = message;
-  if (apiKey && apiKey.length > 4) {
-    sanitized = sanitized.replaceAll(apiKey, '[REDACTED_API_KEY]');
+  const knownKey = apiKey || process.env.GEMINI_API_KEY;
+  if (knownKey && knownKey.length > 4) {
+    sanitized = sanitized.replaceAll(knownKey, '[REDACTED_API_KEY]');
   }
-  // Strip standard Google API key pattern if present (AIzaSy...)
+  // Strip standard Google API key patterns: AIza... (39 chars)
+  sanitized = sanitized.replace(/AIza[0-9A-Za-z_-]{35}/g, '[REDACTED_API_KEY]');
   sanitized = sanitized.replace(/AIzaSy[A-Za-z0-9_-]{33}/g, '[REDACTED_API_KEY]');
+  // Strip Bearer tokens and query parameter tokens
+  sanitized = sanitized.replace(/(Bearer\s+)[A-Za-z0-9._-]+/gi, '$1[REDACTED_API_KEY]');
+  sanitized = sanitized.replace(/([?&](?:key|api_key|apiKey)=)[^&\s]+/gi, '$1[REDACTED_API_KEY]');
   return sanitized;
 }
 
@@ -202,7 +227,10 @@ export interface GemmaInferenceResponse {
 export async function executeGemmaInference(
   options: GemmaInferenceOptions
 ): Promise<GemmaInferenceResponse> {
-  const apiKey = options.client ? (process.env.GEMINI_API_KEY || 'injected-client') : getGeminiApiKey();
+  const hasInjectedClient = Boolean(options.client || customClientProvider);
+  const apiKey = hasInjectedClient
+    ? (process.env.GEMINI_API_KEY || 'injected-client')
+    : getGeminiApiKey();
   const client = options.client || getGeminiClient(apiKey);
   const model = options.modelId || VERIFIED_GEMMA_MODEL_ID;
 
@@ -230,7 +258,41 @@ export async function executeGemmaInference(
     const endTime = performance.now();
     const latencyMs = Math.round(endTime - startTime);
 
-    const text = response.text ?? '';
+    if (!response) {
+      throw new GeminiInferenceError(
+        'Model returned an empty response.',
+        'INVALID_MODEL_RESPONSE',
+        502
+      );
+    }
+
+    if (response.promptFeedback?.blockReason) {
+      throw new GeminiInferenceError(
+        `Model prompt was blocked by content filters: ${response.promptFeedback.blockReason}`,
+        'INVALID_MODEL_RESPONSE',
+        422
+      );
+    }
+
+    const candidate = response.candidates?.[0];
+    const finishReason = candidate?.finishReason;
+
+    if (finishReason === 'SAFETY' || finishReason === 'RECITATION' || finishReason === 'BLOCKLIST') {
+      throw new GeminiInferenceError(
+        `Model response generation was blocked (${finishReason}).`,
+        'INVALID_MODEL_RESPONSE',
+        422
+      );
+    }
+
+    const text = response.text;
+    if (typeof text !== 'string') {
+      throw new GeminiInferenceError(
+        'Model returned an invalid response structure without text content.',
+        'INVALID_MODEL_RESPONSE',
+        502
+      );
+    }
 
     // Safely extract token counts from response usageMetadata
     const usage = response.usageMetadata;
@@ -241,9 +303,6 @@ export async function executeGemmaInference(
           totalTokens: usage.totalTokenCount,
         }
       : undefined;
-
-    const candidate = response.candidates?.[0];
-    const finishReason = candidate?.finishReason;
 
     return {
       text,

@@ -33,10 +33,12 @@ describe('Gemma 4 Model Client Integration (lib/gemini.ts)', () => {
     expect(defaultModel?.id).toBe('gemma-4-31b-it');
   });
 
-  it('includes both dense and alternative Gemma 4 variants in supported models', () => {
+  it('includes dense, MoE, and edge Gemma 4 variants in supported models', () => {
     const ids = SUPPORTED_GEMMA_MODELS.map((m) => m.id);
     expect(ids).toContain('gemma-4-31b-it');
     expect(ids).toContain('gemma-4-26b-a4b-it');
+    expect(ids).toContain('gemma-4-e4b-it');
+    expect(ids).toContain('gemma-4-e2b-it');
   });
 
   it('throws MISSING_API_KEY error when GEMINI_API_KEY is not defined or blank', () => {
@@ -73,13 +75,53 @@ describe('Gemma 4 Model Client Integration (lib/gemini.ts)', () => {
     const cleaned = sanitizeErrorMessage(message, secret);
     expect(cleaned).not.toContain(secret);
     expect(cleaned).toContain('[REDACTED_API_KEY]');
+
+    // Strip Google API key not starting with 'Sy'
+    const nonSySecret = 'AIza12345678901234567890123456789012345';
+    expect(sanitizeErrorMessage(`Error: key=${nonSySecret}`)).toContain('[REDACTED_API_KEY]');
+    expect(sanitizeErrorMessage(`Error: key=${nonSySecret}`)).not.toContain(nonSySecret);
+
+    // Strip Bearer token
+    expect(sanitizeErrorMessage('Error with Bearer ya29.a0AfH6SM... in header')).toContain(
+      'Bearer [REDACTED_API_KEY]'
+    );
+
+    // Automatic redaction from process.env when apiKey parameter is omitted
+    process.env.GEMINI_API_KEY = 'secret-env-token-xyz';
+    expect(sanitizeErrorMessage('Request failed for secret-env-token-xyz')).toBe(
+      'Request failed for [REDACTED_API_KEY]'
+    );
   });
 
-  it('executeGemmaInference throws MISSING_API_KEY when no key configured', async () => {
+  it('executeGemmaInference throws MISSING_API_KEY when no key configured and no provider injected', async () => {
     delete process.env.GEMINI_API_KEY;
     await expect(
       executeGemmaInference({ prompt: 'Hello world' })
     ).rejects.toThrowError(GeminiInferenceError);
+  });
+
+  it('executeGemmaInference works with injected client provider even when GEMINI_API_KEY is not set in env', async () => {
+    delete process.env.GEMINI_API_KEY;
+
+    const mockResponse = {
+      text: 'Inference without env key via injected provider.',
+      usageMetadata: {
+        promptTokenCount: 10,
+        candidatesTokenCount: 5,
+        totalTokenCount: 15,
+      },
+      candidates: [{ finishReason: 'STOP' }],
+    };
+
+    setGeminiClientProvider(() => ({
+      models: {
+        generateContent: vi.fn().mockResolvedValue(mockResponse),
+      },
+    } as unknown as GoogleGenAI));
+
+    const result = await executeGemmaInference({ prompt: 'Hello' });
+    expect(result.text).toBe('Inference without env key via injected provider.');
+    expect(result.tokenUsage?.totalTokens).toBe(15);
   });
 
   it('executeGemmaInference parses model output and token usage correctly when client returns valid response', async () => {
@@ -106,6 +148,7 @@ describe('Gemma 4 Model Client Integration (lib/gemini.ts)', () => {
       prompt: 'Test prompt',
       systemInstruction: 'Act as a secure assistant.',
       temperature: 0.1,
+      maxOutputTokens: 256,
     });
 
     expect(result.text).toBe('Verified Gemma 4 answer.');
@@ -119,7 +162,66 @@ describe('Gemma 4 Model Client Integration (lib/gemini.ts)', () => {
       config: {
         systemInstruction: 'Act as a secure assistant.',
         temperature: 0.1,
+        maxOutputTokens: 256,
       },
+    });
+  });
+
+  it('throws INVALID_MODEL_RESPONSE when model response is null or undefined', async () => {
+    setGeminiClientProvider(() => ({
+      models: {
+        generateContent: vi.fn().mockResolvedValue(null),
+      },
+    } as unknown as GoogleGenAI));
+
+    await expect(executeGemmaInference({ prompt: 'Test' })).rejects.toMatchObject({
+      code: 'INVALID_MODEL_RESPONSE',
+      status: 502,
+    });
+  });
+
+  it('throws INVALID_MODEL_RESPONSE when model prompt is blocked by promptFeedback', async () => {
+    setGeminiClientProvider(() => ({
+      models: {
+        generateContent: vi.fn().mockResolvedValue({
+          promptFeedback: { blockReason: 'SAFETY' },
+        }),
+      },
+    } as unknown as GoogleGenAI));
+
+    await expect(executeGemmaInference({ prompt: 'Test' })).rejects.toMatchObject({
+      code: 'INVALID_MODEL_RESPONSE',
+      status: 422,
+    });
+  });
+
+  it('throws INVALID_MODEL_RESPONSE when candidate generation is blocked by safety filters', async () => {
+    setGeminiClientProvider(() => ({
+      models: {
+        generateContent: vi.fn().mockResolvedValue({
+          candidates: [{ finishReason: 'SAFETY' }],
+        }),
+      },
+    } as unknown as GoogleGenAI));
+
+    await expect(executeGemmaInference({ prompt: 'Test' })).rejects.toMatchObject({
+      code: 'INVALID_MODEL_RESPONSE',
+      status: 422,
+    });
+  });
+
+  it('throws INVALID_MODEL_RESPONSE when model returns non-string text structure', async () => {
+    setGeminiClientProvider(() => ({
+      models: {
+        generateContent: vi.fn().mockResolvedValue({
+          candidates: [{ finishReason: 'STOP' }],
+        }),
+      },
+    } as unknown as GoogleGenAI));
+
+    await expect(executeGemmaInference({ prompt: 'Test' })).rejects.toMatchObject({
+      code: 'INVALID_MODEL_RESPONSE',
+      status: 502,
     });
   });
 
@@ -249,6 +351,28 @@ describe('Route Handler /api/evaluate (app/api/evaluate/route.ts)', () => {
       expect(EvaluateRequestSchema.safeParse({ prompt: 'ok', temperature: 2.5 }).success).toBe(false);
       expect(EvaluateRequestSchema.safeParse({ prompt: 'ok', temperature: 1.0 }).success).toBe(true);
     });
+
+    it('accepts nullish optional fields from JSON callers', () => {
+      const result = EvaluateRequestSchema.safeParse({
+        prompt: 'Valid prompt',
+        systemInstruction: null,
+        systemPolicy: null,
+        referenceDocument: null,
+        referenceDoc: null,
+        model: null,
+        temperature: null,
+        maxOutputTokens: null,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('validates maxOutputTokens boundaries', () => {
+      expect(EvaluateRequestSchema.safeParse({ prompt: 'ok', maxOutputTokens: 512 }).success).toBe(true);
+      expect(EvaluateRequestSchema.safeParse({ prompt: 'ok', maxOutputTokens: 0 }).success).toBe(false);
+      expect(EvaluateRequestSchema.safeParse({ prompt: 'ok', maxOutputTokens: -10 }).success).toBe(false);
+      expect(EvaluateRequestSchema.safeParse({ prompt: 'ok', maxOutputTokens: 10000 }).success).toBe(false);
+      expect(EvaluateRequestSchema.safeParse({ prompt: 'ok', maxOutputTokens: 12.5 }).success).toBe(false);
+    });
   });
 
   describe('GET /api/evaluate', () => {
@@ -366,6 +490,63 @@ describe('Route Handler /api/evaluate (app/api/evaluate/route.ts)', () => {
       expect(json.finishReason).toBe('STOP');
     });
 
+    it('passes maxOutputTokens to executeGemmaInference and returns 200', async () => {
+      process.env.GEMINI_API_KEY = 'mock-key';
+
+      const mockGenerateContent = vi.fn().mockResolvedValue({
+        text: 'Bounded tokens response.',
+        candidates: [{ finishReason: 'STOP' }],
+      });
+
+      setGeminiClientProvider(() => ({
+        models: {
+          generateContent: mockGenerateContent,
+        },
+      } as unknown as GoogleGenAI));
+
+      const req = new NextRequest('http://localhost:3000/api/evaluate', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'Test prompt with max tokens',
+          maxOutputTokens: 256,
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      const res = await evaluatePOST(req);
+      expect(res.status).toBe(200);
+      expect(mockGenerateContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            maxOutputTokens: 256,
+          }),
+        })
+      );
+    });
+
+    it('handles INVALID_MODEL_RESPONSE with 502 status and code', async () => {
+      process.env.GEMINI_API_KEY = 'mock-key';
+
+      setGeminiClientProvider(() => ({
+        models: {
+          generateContent: vi.fn().mockResolvedValue(null),
+        },
+      } as unknown as GoogleGenAI));
+
+      const req = new NextRequest('http://localhost:3000/api/evaluate', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'Hello Gemma 4' }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      const res = await evaluatePOST(req);
+      expect(res.status).toBe(502);
+
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.code).toBe('INVALID_MODEL_RESPONSE');
+    });
+
     it('handles upstream rate limits with 429 response status and safe error code', async () => {
       process.env.GEMINI_API_KEY = 'mock-key';
 
@@ -390,6 +571,32 @@ describe('Route Handler /api/evaluate (app/api/evaluate/route.ts)', () => {
       const json = await res.json();
       expect(json.success).toBe(false);
       expect(json.code).toBe('RATE_LIMITED');
+    });
+
+    it('sanitizes unexpected errors and redacts credentials in 502 responses', async () => {
+      process.env.GEMINI_API_KEY = 'mock-key';
+
+      const unexpectedErr = new Error('Unexpected crash at https://api.internal/v1?key=AIzaFakeSecret12345678901234567890123');
+      setGeminiClientProvider(() => ({
+        models: {
+          generateContent: vi.fn().mockRejectedValue(unexpectedErr),
+        },
+      } as unknown as GoogleGenAI));
+
+      const req = new NextRequest('http://localhost:3000/api/evaluate', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'Trigger error' }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      const res = await evaluatePOST(req);
+      expect(res.status).toBe(502);
+
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.code).toBe('UPSTREAM_FAILURE');
+      expect(json.error).not.toContain('AIzaFakeSecret12345678901234567890123');
+      expect(json.error).toContain('[REDACTED_API_KEY]');
     });
   });
 });

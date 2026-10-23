@@ -38,6 +38,81 @@ Built specifically to test **Gemma 4** (`gemma-4-31b-it`) through the official *
 
 ---
 
+## Gemma 4 Model Integration
+
+TruthFence integrates directly with Google's Gemma 4 models using the official `@google/genai` SDK (`^2.31.0`).
+
+### Supported Model Identifiers
+* **Verified Primary Model:** `gemma-4-31b-it`
+  * Architecture: 30.7B parameter dense multimodal instruction-tuned model by Google DeepMind.
+  * Context Window: 256K tokens.
+  * Capabilities: Native system instructions, structured output compliance, deterministic refusal calibration, and high-precision reasoning.
+* **Alternative Model:** `gemma-4-26b-a4b-it`
+
+### Server-Side Route Contract (`/api/evaluate`)
+
+#### `POST /api/evaluate`
+Accepts a structured payload, applies Zod input validation, isolates untrusted reference text, executes server-side inference, and returns model metrics.
+
+**Request Schema:**
+```json
+{
+  "prompt": "Evaluate the evidence regarding canary token CANARY-9821.",
+  "systemInstruction": "You are a secure evaluator. Strictly follow policy.",
+  "referenceDocument": "Untrusted document buffer (up to 40,000 characters)...",
+  "model": "gemma-4-31b-it",
+  "temperature": 0.2
+}
+```
+
+*Limits:*
+* `prompt`: Required string, 1 – 10,000 characters.
+* `systemInstruction` / `systemPolicy`: Optional string, max 20,000 characters.
+* `referenceDocument` / `referenceDoc`: Optional string, max 40,000 characters.
+* `temperature`: Optional float between 0.0 and 2.0 (default 0.2).
+
+**Success Response (`200 OK`):**
+```json
+{
+  "success": true,
+  "model": "gemma-4-31b-it",
+  "text": "Model generated response text...",
+  "latencyMs": 342,
+  "tokenUsage": {
+    "promptTokens": 45,
+    "candidatesTokens": 20,
+    "totalTokens": 65
+  },
+  "finishReason": "STOP"
+}
+```
+
+**Error Response Contract:**
+```json
+{
+  "success": false,
+  "error": "Error description message",
+  "code": "MISSING_API_KEY | INVALID_API_KEY | RATE_LIMITED | MODEL_NOT_FOUND | INVALID_REQUEST | UPSTREAM_FAILURE"
+}
+```
+
+#### `GET /api/evaluate`
+Discovery and health endpoint returning inference readiness, default model, and supported model identifiers:
+```json
+{
+  "endpoint": "/api/evaluate",
+  "status": "ready",
+  "hasApiKey": true,
+  "defaultModel": "gemma-4-31b-it",
+  "supportedModels": [
+    { "id": "gemma-4-31b-it", "name": "Gemma 4 31B IT (Recommended)", "default": true },
+    { "id": "gemma-4-26b-a4b-it", "name": "Gemma 4 26B A4B IT", "default": false }
+  ]
+}
+```
+
+---
+
 ## Tech Stack
 
 * **Framework:** Next.js 15 (App Router, Server-side Route Handlers)

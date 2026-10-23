@@ -1,12 +1,16 @@
-import { GoogleGenAI } from '@google/genai';
 import { Scenario, Turn } from '@/types/scenario';
+import {
+  VERIFIED_GEMMA_MODEL_ID,
+  SUPPORTED_GEMMA_MODELS,
+  getGeminiClient,
+  getGeminiApiKey,
+  sanitizeErrorMessage,
+  GeminiInferenceError,
+  GeminiErrorCode,
+} from '@/lib/gemini';
 
-export const SUPPORTED_MODELS = [
-  { id: 'gemma-4-31b-it', name: 'Gemma 4 31B IT (Recommended)', default: true },
-  { id: 'gemma-4-26b-a4b-it', name: 'Gemma 4 26B A4B IT', default: false },
-] as const;
-
-export const DEFAULT_MODEL_ID = 'gemma-4-31b-it';
+export const SUPPORTED_MODELS = SUPPORTED_GEMMA_MODELS;
+export const DEFAULT_MODEL_ID = VERIFIED_GEMMA_MODEL_ID;
 
 export interface InferenceResult {
   text: string;
@@ -18,15 +22,11 @@ export interface InferenceResult {
   };
 }
 
-export class InferenceError extends Error {
-  code: string;
-  status?: number;
-
-  constructor(message: string, code = 'INFERENCE_ERROR', status?: number) {
-    super(message);
+export class InferenceError extends GeminiInferenceError {
+  constructor(message: string, code: GeminiErrorCode | string = 'UPSTREAM_FAILURE', status = 500) {
+    super(message, code as GeminiErrorCode, status);
     this.name = 'InferenceError';
-    this.code = code;
-    this.status = status;
+    Object.setPrototypeOf(this, InferenceError.prototype);
   }
 }
 
@@ -40,17 +40,16 @@ export async function runGemmaInference(params: {
   promptOverride?: string;
   modelId?: string;
 }): Promise<InferenceResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
-
-  if (!apiKey || apiKey.trim() === '') {
+  const envKey = process.env.GEMINI_API_KEY;
+  if (!envKey || envKey.trim() === '') {
     throw new InferenceError(
       'GEMINI_API_KEY is not configured in the environment. Set GEMINI_API_KEY in .env.local or your deployment environment variables.',
       'MISSING_API_KEY',
       401
     );
   }
-
-  const ai = new GoogleGenAI({ apiKey });
+  const apiKey = envKey.trim();
+  const ai = getGeminiClient(apiKey);
   const model = params.modelId || DEFAULT_MODEL_ID;
   const effectivePolicy =
     params.scenario.systemPolicyOverride || params.systemPolicy;
